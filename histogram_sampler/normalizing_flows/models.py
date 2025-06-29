@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import TensorDataset, DataLoader
 import tqdm
 
-class real_nvp:
+class RealNVP:
     """
     Real NVP (Real-valued Non-Volume Preserving) normalizing flow.
 
@@ -23,16 +23,28 @@ class real_nvp:
         # Wrap histogram data using uniform sampling abstraction
         u = uniform(hist)
         self.dim = u.dimension  # Dimension of the data
-        self.base = nf.distributions.base.DiagGaussian(self.dim)  # Base distribution: standard normal
+
         self.target = torch.tensor(u.get_data(), dtype=torch.float32)  # Target distribution samples
+        
+        self.mu = self.target.mean()
+        self.std = self.target.std()
+        self.target = (self.target - self.mu) / self.std
+
+        # Not good approach
+        # if self.dim % 2 == 1:
+        #     self.isOdd = True
+        #     self.dim += 1
+        #     extra_dim = torch.randn(self.target.shape[0], 1)
+        #     self.target = torch.cat([self.target, extra_dim], dim=1)
+        
+        self.base = nf.distributions.base.DiagGaussian(self.dim)  # Base distribution: standard normal
         self.model = None
         self.loss_hist = None
-        print(self.target.shape)
         
         dataset = TensorDataset(self.target)
         self.data_loader = DataLoader(dataset, batch_size=1000, shuffle=True)
 
-    def train(self, num_layers=32, max_iter=4000):
+    def train(self, num_layers=32, max_iter=4000, show_progress=True):
         # Real NVP flow built from Affine Coupling Blocks and swaps (permutations)
         flows = []
         for i in range(num_layers):
@@ -44,16 +56,15 @@ class real_nvp:
             flows.append(nf.flows.AffineCouplingBlock(param_map))
             
             # Swap dimensions to alternate coupling inputs and outputs
-            flows.append(nf.flows.Permute(self.dim, mode='swap'))
+            flows.append(nf.flows.Permute(self.dim))
 
         # Compose the full normalizing flow model
         model = nf.NormalizingFlow(self.base, flows)
 
         loss_hist = np.array([])
-        optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=5e-5)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-5)
 
-        for it in range(max_iter):
-            print(it)
+        for it in tqdm.trange(max_iter, desc='Training') if show_progress else range(max_iter):
             for batch in self.data_loader:
                 optimizer.zero_grad()
 
@@ -66,15 +77,14 @@ class real_nvp:
                     loss.backward()
                     optimizer.step()
 
-                # loss_hist = np.append(loss_hist, loss.data.numpy())
+            loss_hist = np.append(loss_hist, loss.data.numpy())
 
         self.loss_hist = loss_hist
         self.model = model
 
+    # Sample from trained flow model
     def sample(self, num=1000):
-        # Sample from trained flow model
-        return self.model.sample(num)
-
+        return self.model.sample(num)[0].detach() * self.std + self.mu
 
 
 class AutoregressiveRationalQuadraticSpline:
